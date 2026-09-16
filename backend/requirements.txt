@@ -1,0 +1,10 @@
+# torch (CPU build) is installed separately in the Dockerfile from the PyTorch CPU index.
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+httpx==0.28.1
+itsdangerous==2.2.0
+python-multipart==0.0.32
+numpy==2.4.6
+pysubs2==1.8.1
+faster-whisper==1.2.1
+transformers>=4.45,<6

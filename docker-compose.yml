@@ -1,0 +1,39 @@
+x-app: &app
+  build: .
+  image: movie-censor:latest
+  env_file: .env
+  restart: unless-stopped
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  volumes:
+    # SQLite + model cache live on a Docker named volume (fast, and WAL locking works).
+    - censor-data:/data
+    # Your Plex movie folder(s), read-only. Add one line per root and matching PATH_MAPS entries.
+    - ${MOVIES_HOST_DIR}:/media/movies:ro
+    # Where censored copies go. Point a separate Plex library at this folder.
+    - ${CENSORED_HOST_DIR}:/media/censored
+
+services:
+  web:
+    <<: *app
+    ports:
+      - "${WEB_PORT:-8787}:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      - web
+    stop_grace_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "${WORKER_CPUS:-4}"
+          memory: "${WORKER_MEMORY:-6g}"
+
+volumes:
+  censor-data:
