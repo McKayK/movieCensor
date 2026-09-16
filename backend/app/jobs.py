@@ -126,6 +126,7 @@ def analyze(conn: sqlite3.Connection, job: dict, engine: Engine, cfg: Settings =
     windows = build_windows([(h["start"], h["end"]) for h in sub_hits], cfg.window_pad, cfg.window_merge_gap,
                             duration or None, cfg.window_max)
     window_words: list[list[dict]] = []
+    failed_windows = 0
     reader = None
 
     if windows:
@@ -161,8 +162,15 @@ def analyze(conn: sqlite3.Connection, job: dict, engine: Engine, cfg: Settings =
                     ctx.stage(f"Transcribing window {k + 1} of {len(pending)}", 0.20 + 0.55 * done / total_audio)
                     clip = reader.read(ws, we)
                     texts = [c["text"] for c in cues if c["end"] >= ws and c["start"] <= we]
-                    segs = transcriber.transcribe(clip, prompt_for(cfg.whisper_prompt_mode, texts))
-                    raw.append((ws, we, segs))
+                    try:
+                        segs = transcriber.transcribe(clip, prompt_for(cfg.whisper_prompt_mode, texts))
+                    except Exception as e:  # one bad window shouldn't sink the job; its hits go to review
+                        log.warning("job %s: window %.1f-%.1f failed to transcribe: %s", job["id"], ws, we, e)
+                        segs = None
+                    if segs is not None:
+                        raw.append((ws, we, segs))
+                    else:
+                        failed_windows += 1
                     done += we - ws
             finally:
                 transcriber.close()
@@ -199,6 +207,8 @@ def analyze(conn: sqlite3.Connection, job: dict, engine: Engine, cfg: Settings =
     unconfirmed = sum(1 for h in hits if h["status"] == "unconfirmed")
     extra = sum(1 for h in hits if h["status"] == "audio_only")
     summary = f"{confirmed} confirmed, {unconfirmed} unconfirmed, {extra} heard only in audio"
+    if failed_windows:
+        summary += f" ({failed_windows} windows could not be transcribed)"
     db.update_job(conn, job["id"], status=status, progress=1.0 if needs_review else 0.0,
                   stage=("Waiting for review: " if needs_review else "Queued for render: ") + summary)
     log.info("job %s analyzed: %s (style=%s)", job["id"], summary, style)

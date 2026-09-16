@@ -119,9 +119,14 @@ def word_spans(
     return out
 
 
-def plausible(start: float, end: float, whisper_start: float, whisper_end: float) -> bool:
-    """Reject alignments that clearly went wrong (noise, music, wrong transcript) so we fall back to Whisper."""
+def plausible(start: float, end: float, whisper_start: float, whisper_end: float, estimated: bool = False) -> bool:
+    """Reject alignments that clearly went wrong (noise, music, wrong transcript) so we fall back to Whisper.
+
+    Estimated word times (segment-level fallback) are too rough to compare against, so only length is checked.
+    """
     dur = end - start
+    if estimated:
+        return 0 < dur <= 1.5
     wdur = max(0.05, whisper_end - whisper_start)
     if dur <= 0 or dur > max(1.5, 3.0 * wdur):
         return False
@@ -187,7 +192,8 @@ class Aligner:
                     tokens, ranges = build_tokens(texts, self.vocab)
                     spans = word_spans(em, tokens, ranges, self.blank, frame_sec)
                     for w, sp in zip(words, spans):
-                        if sp is not None and plausible(s0 + sp["start"], s0 + sp["end"], w["start"], w["end"]):
+                        if sp is not None and plausible(s0 + sp["start"], s0 + sp["end"], w["start"], w["end"],
+                                                                 bool(w.get("est"))):
                             w["start"] = s0 + sp["start"]
                             w["end"] = s0 + sp["end"]
                             w["conf"] = sp["conf"]

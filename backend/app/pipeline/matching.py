@@ -40,6 +40,7 @@ def audio_matches(words: list[dict], groups: list[str], custom_words: list[str] 
                 "end": words[last]["end"],
                 "conf": float(np.mean([words[i].get("conf", words[i].get("prob", 0.0)) for i in range(first, last + 1)])),
                 "aligned": all(words[i].get("aligned", False) for i in range(first, last + 1)),
+                "estimated": any(words[i].get("est", False) for i in range(first, last + 1)),
             }
         )
     return out
@@ -57,6 +58,8 @@ def analyze_windows(
     for words in window_words:
         words = sorted(words, key=lambda w: w["start"])
         for am in audio_matches(words, groups, custom_words):
+            if am["estimated"] and not am["aligned"]:
+                continue  # no trustworthy timing: leave the subtitle hit unconfirmed for review
             lo, hi = refine(words, am["first"], am["last"], read, cfg)
             if not am["aligned"]:
                 # Whisper-only timing drifts; be generous rather than leak half a word.
