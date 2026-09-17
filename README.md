@@ -3,8 +3,8 @@
 Self-hosted, VidAngel-style profanity censoring for a Plex library. Family members sign in with Plex, pick a movie, see which swear words it has, choose what to remove, and get a muted copy in a separate **Censored** Plex library.
 
 - **Subtitle-first:** subtitles find the swears instantly. The CPU only transcribes short windows around them (roughly 10–15 minutes of audio per movie instead of 2 hours).
-- **No partial words:** Whisper finds the words, wav2vec2 forced alignment gets exact word boundaries, then padding weighted toward the start of the word, snapping to quiet spots, and 8 ms fades.
-- **Surround-aware:** in 5.1/7.1 movies only the dialogue (center) channel is muted, so music and effects keep playing. Front L/R are ducked to catch bleed.
+- **No partial words:** Whisper finds the words and wav2vec2 forced alignment gets exact word boundaries. Then consonant onset detection finds where hissy sounds really start, padding (which wins over neighboring words) covers the edges, and S-curve fades avoid clicks.
+- **Surround-aware:** in 5.1/7.1 movies the dialogue (center) channel is muted. Demucs removes the voice's echo from the other speakers, so music and effects keep playing.
 - **Review:** anything the subtitles flag but the audio didn't confirm waits for a person, with before/after audio previews.
 - **Original files are never touched.** The video is copied bit-for-bit, and the audio is re-encoded to E-AC3.
 
@@ -134,21 +134,35 @@ python -m app.tools.censor_file "Heat (1995).mkv" --preset standard --out ./cens
 
 On the laptop's RTX 3060 you can set `WHISPER_DEVICE=cuda` and `WHISPER_COMPUTE_TYPE=float16` for fast experiments. The server stays on CPU.
 
-## 6. Tuning partial-word leaks
+## 6. Tuning leaks, clicks and echoes
 
-All values are in `.env` and in seconds.
+All values are in `.env` and in seconds. After changing them, run `docker compose up -d --force-recreate`.
+
+- **Padding / onset settings** (`PRE_PAD` through `SNAP`) are applied during analysis. To try new values on a movie, create a new censored copy. Transcriptions are cached per file, so it skips straight to matching and rendering.
+- **Fade and echo settings** are applied at render time. **Reopen to tweak & re-render** on a finished job picks them up, and keeps your decisions and nudges.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `PRE_PAD` | 0.08 | Silence before the aligned word start. Raise if you still hear the first consonant. |
-| `POST_PAD` | 0.04 | Silence after the word end. |
-| `MIN_PAD` | 0.03 | Padding that always applies, even when words touch. |
-| `SNAP` | 0.05 | How far an edge may move outward to find a quiet spot. |
-| `MERGE_GAP` | 0.15 | Mutes closer than this merge into one. |
-| `FADE` | 0.008 | Fade length (outside the muted span, so it never lets sound through). |
-| `FRONT_DUCK` | 0.25 | 5.1 front L/R level during a mute (1.0 = leave music untouched). |
+| `PRE_PAD` | 0.12 | Silence before the aligned word start. |
+| `MIN_PRE_PAD` | 0.10 | Always applied before a word, even if it trims the end of the previous word. |
+| `POST_PAD` / `MIN_POST_PAD` | 0.05 / 0.04 | Same, after the word. |
+| `ONSET_DETECT` / `ONSET_MAX` | true / 0.20 | Finds where hissy consonants (f, s, sh) really start, up to 200 ms before the aligned word. |
+| `SNAP` | 0.05 | How far an edge may move outward to a quiet spot. |
+| `FADE` | 0.025 | S-curve fade on the muted dialogue. Raise to 0.04 if you still hear clicks. |
+| `DUCK_FADE` | 0.06 | Fade on speakers that are turned down or cleaned. |
+| `ECHO_MODE` | deep | Default for new jobs: `deep` (Demucs removes the voice from every speaker), `duck`, or `off`. |
+| `ECHO_TAIL` | 0.35 | How long echo cleanup continues after the word. Stops early if someone speaks again. |
+| `FRONT_DUCK` / `SURROUND_DUCK` | 0.25 / 0.35 | Speaker levels in duck mode, or when Demucs isn't available. |
 
-Transcriptions are cached per file and window, so re-running a job after tuning skips Whisper.
+**Per-hit fixes in review:** each muted hit has **◀ earlier** and **later ▶** buttons that widen that one mute by 50 ms.
+
+**Deep clean:** Demucs only processes about 1.5 seconds around each censored word, for each speaker pair. To see how long that takes on your CPU:
+
+```powershell
+docker compose run --rm worker python -m app.tools.benchmark "/media/movies/Movie (2024)/Movie (2024).mkv" --start 1200 --seconds 30 --demucs
+```
+
+Review previews approximate deep clean by turning the other speakers down. Once a job is done, the Cens preview plays the finished file, so it's exact.
 
 ## Architecture
 

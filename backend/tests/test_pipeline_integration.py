@@ -96,8 +96,28 @@ class FakePlex:
         return None
 
 
+class FakeRemover:
+    """Stands in for Demucs: treats the 300 Hz "dialogue" tone as voice and notches it out."""
+
+    def remove_vocals(self, stereo, rate):
+        return notch(stereo, rate, 300.0)
+
+    def close(self):
+        pass
+
+
+def notch(x, rate, freq, width=40.0):
+    spec = np.fft.rfft(x, axis=0)
+    freqs = np.fft.rfftfreq(x.shape[0], 1 / rate)
+    spec[(freqs > freq - width) & (freqs < freq + width)] = 0
+    return np.fft.irfft(spec, n=x.shape[0], axis=0).astype(np.float32)
+
+
 class FakeEngine:
     current_offset = 0.0
+
+    def vocal_remover(self):
+        return FakeRemover()
 
     def transcriber(self):
         return FakeTranscriber()
@@ -165,7 +185,7 @@ def test_analyze_and_render(env, monkeypatch):
     assert [(h["word"], h["status"]) for h in hits] == [("shit", "confirmed"), ("fuck", "confirmed")]
     for h, (_, s, e) in zip(hits, [WORDS[1], WORDS[6]]):
         assert h["mute_start"] <= s - 0.03 + 1e-6 and h["mute_end"] >= e + 0.03 - 1e-6   # full word + min pad
-        assert h["mute_start"] >= s - 0.08 - 0.05 - 1e-6                                   # never more than pad + snap
+        assert h["mute_start"] >= s - 0.12 - 0.05 - 1e-6                                   # never more than pad + snap
 
     job = db.row(conn, "SELECT * FROM jobs WHERE id=?", (job_id,))
     db.update_job(conn, job_id, status="rendering")

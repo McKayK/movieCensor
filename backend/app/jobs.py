@@ -21,7 +21,7 @@ log = logging.getLogger("jobs")
 
 HIT_COLUMNS = [
     "source", "group_id", "word", "cue_index", "cue_start", "cue_end", "cue_cs", "cue_ce", "line_text",
-    "status", "word_start", "word_end", "mute_start", "mute_end", "confidence", "decision",
+    "status", "word_start", "word_end", "mute_start", "mute_end", "confidence", "decision", "next_word",
 ]
 
 
@@ -41,6 +41,11 @@ class Engine:
         from .pipeline.align import Aligner
 
         return Aligner(self.cfg.align_model, self.cfg.cpu_threads, self.cfg.models_dir)
+
+    def vocal_remover(self):
+        from .pipeline.separate import DemucsRemover
+
+        return DemucsRemover(self.cfg.demucs_model, self.cfg.cpu_threads, self.cfg.models_dir)
 
     def plex(self):
         from .plex import server
@@ -238,7 +243,8 @@ def job_edits(job: dict, hits: list[dict], cfg: Settings = default_settings) -> 
         if h["decision"] == "pending":  # safety net: never ship an unreviewed hit unmuted
             h["decision"] = "mute_line"
         resolved.append(h)
-    return build_edits(resolved, opts.get("style", "mute"), cfg.merge_gap, cfg.line_pad)
+    return build_edits(resolved, opts.get("style", "mute"), cfg.merge_gap, cfg.line_pad, cfg.echo_tail,
+                       cfg.duck_fade + 0.03)
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -262,11 +268,35 @@ def render_job(conn: sqlite3.Connection, job: dict, engine: Engine, cfg: Setting
     wdir = work_dir(cfg, job["id"])
     os.makedirs(wdir, exist_ok=True)
     audio_out = os.path.join(wdir, "audio.mka")
-    rcfg = render.RenderConfig.from_settings(cfg)
+    opts = db.loads(job["settings_json"], {})
+    rcfg = render.RenderConfig.from_settings(cfg, opts.get("echo"))
+    notes: list[str] = []
 
-    ctx.stage(f"Rendering audio ({len(edits)} edits)", 0.0)
-    render.render_audio(path, jm["streamIndex"], jm["channels"], jm["sampleRate"], jm.get("duration") or 0.0,
-                        edits, audio_out, rcfg, ctx.progress(0.0, 0.55), ctx.canceled)
+    remover = None
+    if rcfg.echo_mode == "deep" and edits:
+        ctx.stage(f"Loading voice separation model ({cfg.demucs_model})", 0.0)
+        try:
+            remover = engine.vocal_remover()
+        except Exception as e:
+            log.warning("job %s: Demucs unavailable, falling back to ducking: %s", job["id"], e)
+            notes.append("echo cleanup fell back to ducking (Demucs failed to load)")
+            rcfg.echo_mode = "duck"
+
+    label = {"off": "", "duck": ", ducking echoes", "deep": ", removing voice echoes"}[rcfg.echo_mode]
+    ctx.stage(f"Rendering audio ({len(edits)} edits{label})", 0.0)
+
+    def region_done(done: int, total: int) -> None:
+        ctx.stage(f"Rendering audio ({len(edits)} edits, cleaned {done} of {total} echo regions)")
+
+    try:
+        failed = render.render_audio(path, jm["streamIndex"], jm["channels"], jm["sampleRate"],
+                                     jm.get("duration") or 0.0, edits, audio_out, rcfg, ctx.progress(0.0, 0.55),
+                                     ctx.canceled, remover, region_done if remover else None)
+    finally:
+        if remover is not None:
+            remover.close()
+    if failed:
+        notes.append(f"{failed} echo regions fell back to ducking")
     ctx.check_cancel()
 
     srt_path = None
@@ -294,7 +324,7 @@ def render_job(conn: sqlite3.Connection, job: dict, engine: Engine, cfg: Setting
 
     warning = publish.plex_scan(engine.plex(), os.path.dirname(dest), cfg.censored_dir, cfg.censored_host_path)
     db.update_job(conn, job["id"], status="done", progress=1.0, output_path=dest, finished_at=db.now(),
-                  stage="Done" + (f" — {warning}" if warning else ""))
+                  stage="Done" + "".join(f" — {n}" for n in notes + ([warning] if warning else [])))
     if not cfg.keep_work_files:
         shutil.rmtree(wdir, ignore_errors=True)
     log.info("job %s done -> %s", job["id"], dest)

@@ -65,6 +65,7 @@ def analyze_windows(
                 # Whisper-only timing drifts; be generous rather than leak half a word.
                 lo, hi = max(0.0, lo - UNALIGNED_EXTRA), hi + UNALIGNED_EXTRA
             am["mute_start"], am["mute_end"] = lo, hi
+            am["next_start"] = words[am["last"] + 1]["start"] if am["last"] + 1 < len(words) else None
             dup = next(
                 (f for f in found if f["group"] == am["group"] and f["start"] < am["end"] and am["start"] < f["end"]),
                 None,
@@ -108,7 +109,7 @@ def reconcile(sub_hits: list[dict], audio: list[dict], cues: dict[int, dict], to
                 **base, "source": "both", "word": am["text"], "status": "confirmed",
                 "word_start": am["start"], "word_end": am["end"],
                 "mute_start": am["mute_start"], "mute_end": am["mute_end"],
-                "confidence": am["conf"], "decision": "mute",
+                "confidence": am["conf"], "decision": "mute", "next_word": am.get("next_start"),
             })
         else:
             hits.append({
@@ -127,7 +128,7 @@ def reconcile(sub_hits: list[dict], audio: list[dict], cues: dict[int, dict], to
             "source": "audio", "word": am["text"], "status": "audio_only",
             "word_start": am["start"], "word_end": am["end"],
             "mute_start": am["mute_start"], "mute_end": am["mute_end"],
-            "confidence": am["conf"], "decision": "mute",
+            "confidence": am["conf"], "decision": "mute", "next_word": am.get("next_start"),
         })
     hits.sort(key=lambda h: (h["word_start"] if h["word_start"] is not None else h["cue_start"] or 0.0))
     return hits
@@ -140,20 +141,35 @@ def _cue_at(cues: dict[int, dict], t: float) -> dict | None:
     return None
 
 
-def build_edits(hits: list[dict], style: str, merge_gap: float, line_pad: float) -> list[dict]:
-    """The edit list the renderer consumes. Adjacent spans merge so fades don't stutter."""
+def build_edits(hits: list[dict], style: str, merge_gap: float, line_pad: float, echo_tail: float = 0.35,
+                tail_guard: float = 0.09) -> list[dict]:
+    """The edit list the renderer consumes. Adjacent spans merge so fades don't stutter.
+
+    Each edit carries `tail`: how long echo cleanup may continue after the span. It stops before the next
+    spoken word (including the fade back, `tail_guard`) so cleanup never eats into the dialogue that follows.
+    """
     spans: list[tuple[float, float, dict]] = []
     for h in hits:
         d = h["decision"]
+        ns, ne = h.get("nudge_start") or 0.0, h.get("nudge_end") or 0.0  # positive = widen
         if d == "mute" and h.get("mute_start") is not None:
-            spans.append((h["mute_start"], h["mute_end"], h))
+            s, e = h["mute_start"] - ns, h["mute_end"] + ne
         elif d in ("mute", "mute_line") and h.get("cue_start") is not None:
-            spans.append((max(0.0, h["cue_start"] - line_pad), h["cue_end"] + line_pad, h))
+            s, e = h["cue_start"] - line_pad - ns, h["cue_end"] + line_pad + ne
+        else:
+            continue
+        if e > s:
+            spans.append((max(0.0, s), e, h))
     kind = "bleep" if style == "bleep" else "mute"
     edits = []
     for s, e, payload in merge_spans(spans, merge_gap):
+        tail = echo_tail
+        for p in payload:
+            nxt = p.get("next_word")
+            if nxt is not None and p.get("decision") == "mute":
+                tail = min(tail, max(0.0, nxt - e - tail_guard))
         edits.append({
-            "start": round(s, 4), "end": round(e, 4), "kind": kind,
+            "start": round(s, 4), "end": round(e, 4), "kind": kind, "tail": round(tail, 4),
             "reason": ", ".join(sorted({p["group_id"] for p in payload})),
             "hit_ids": [p.get("id") for p in payload if p.get("id") is not None],
         })

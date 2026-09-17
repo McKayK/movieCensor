@@ -65,6 +65,9 @@ def create_job(body: dict = Body(...), user: dict = Depends(current_user), conn:
     style = body.get("style", "mute")
     if style not in ("mute", "bleep"):
         raise HTTPException(400, "style must be mute or bleep")
+    echo = body.get("echo") or settings.echo_mode
+    if echo not in render.ECHO_MODES:
+        raise HTTPException(400, f"echo must be one of {render.ECHO_MODES}")
     if not groups and not custom:
         raise HTTPException(400, "Pick at least one word group or custom word")
     scan = db.row(conn, "SELECT * FROM scans WHERE id=? AND rating_key=?", (scan_id, rating_key))
@@ -80,7 +83,7 @@ def create_job(body: dict = Body(...), user: dict = Depends(current_user), conn:
         meta = plex.summarize(plex.server().metadata(rating_key))
     except plex.PlexError as e:
         raise HTTPException(502, str(e))
-    opts = {"groups": groups, "custom_words": custom, "style": style, "guids": meta["guids"]}
+    opts = {"groups": groups, "custom_words": custom, "style": style, "echo": echo, "guids": meta["guids"]}
     job_id = db.execute(
         conn,
         "INSERT INTO jobs (rating_key, title, year, user_id, scan_id, status, stage, settings_json, created_at, updated_at) "
@@ -112,7 +115,7 @@ def get_job(job_id: int, user: dict = Depends(current_user), conn: sqlite3.Conne
             "word": h["word"], "line": h["line_text"], "cs": h["cue_cs"], "ce": h["cue_ce"], "cueStart": h["cue_start"], "cueEnd": h["cue_end"],
             "status": h["status"], "wordStart": h["word_start"], "wordEnd": h["word_end"],
             "muteStart": h["mute_start"], "muteEnd": h["mute_end"], "confidence": h["confidence"],
-            "decision": h["decision"],
+            "decision": h["decision"], "nudgeStart": h["nudge_start"], "nudgeEnd": h["nudge_end"],
         }
         for h in hits
     ]
@@ -165,6 +168,70 @@ def bulk_decision(job_id: int, body: dict = Body(...), user: dict = Depends(curr
     for hit in db.rows(conn, sql, args):
         _set_decision(conn, hit, decision)
     return {"ok": True}
+
+
+@router.post("/{job_id}/hits/{hit_id}/nudge")
+def nudge(job_id: int, hit_id: int, body: dict = Body(...), user: dict = Depends(current_user),
+          conn: sqlite3.Connection = Depends(db.get_conn)):
+    """Widen (positive) or tighten (negative) one hit's mute. `start`/`end` are deltas in seconds; `reset` clears."""
+    job = _job_or_404(conn, job_id)
+    _can_modify(user, job)
+    if job["status"] != "needs_review":
+        raise HTTPException(409, "Timing can only change while the job is waiting for review (use Re-render on a finished job)")
+    hit = db.row(conn, "SELECT * FROM job_hits WHERE id=? AND job_id=?", (hit_id, job_id))
+    if not hit:
+        raise HTTPException(404, "hit not found")
+    limit = settings.max_nudge
+    if body.get("reset"):
+        ns = ne = 0.0
+    else:
+        ns = hit["nudge_start"] + float(body.get("start") or 0.0)
+        ne = hit["nudge_end"] + float(body.get("end") or 0.0)
+    ns = round(max(-limit, min(limit, ns)), 3)
+    ne = round(max(-limit, min(limit, ne)), 3)
+    conn.execute("UPDATE job_hits SET nudge_start=?, nudge_end=? WHERE id=?", (ns, ne, hit_id))
+    return {"ok": True, "nudgeStart": ns, "nudgeEnd": ne}
+
+
+@router.post("/{job_id}/rerender")
+def rerender(job_id: int, user: dict = Depends(current_user), conn: sqlite3.Connection = Depends(db.get_conn)):
+    """Reopen a finished job for review so decisions and timing can be tweaked, then render again.
+
+    Transcription and alignment are kept; only the render runs again and the censored file is replaced.
+    """
+    job = _job_or_404(conn, job_id)
+    _can_modify(user, job)
+    if job["status"] not in ("done", "failed"):
+        raise HTTPException(409, "Only finished or failed jobs can be re-rendered")
+    has_hits = db.row(conn, "SELECT COUNT(*) AS n FROM job_hits WHERE job_id=?", (job_id,))["n"]
+    if not has_hits or not job["media_json"]:
+        raise HTTPException(409, "This job never finished analyzing; use Retry instead")
+    if db.row(conn, f"SELECT id FROM jobs WHERE rating_key=? AND status IN {ACTIVE} AND id != ?", (job["rating_key"], job_id)):
+        raise HTTPException(409, "This movie already has another job in progress")
+    db.update_job(conn, job_id, status="needs_review", stage="Reopened for review", progress=1.0, error=None,
+                  cancel_requested=0, finished_at=None)
+    return job_view(_job_or_404(conn, job_id))
+
+
+@router.post("/{job_id}/settings")
+def update_settings(job_id: int, body: dict = Body(...), user: dict = Depends(current_user),
+                    conn: sqlite3.Connection = Depends(db.get_conn)):
+    """Change style / echo handling while reviewing."""
+    job = _job_or_404(conn, job_id)
+    _can_modify(user, job)
+    if job["status"] != "needs_review":
+        raise HTTPException(409, "Settings can only change while the job is waiting for review")
+    opts = db.loads(job["settings_json"], {})
+    if "style" in body:
+        if body["style"] not in ("mute", "bleep"):
+            raise HTTPException(400, "style must be mute or bleep")
+        opts["style"] = body["style"]
+    if "echo" in body:
+        if body["echo"] not in render.ECHO_MODES:
+            raise HTTPException(400, f"echo must be one of {render.ECHO_MODES}")
+        opts["echo"] = body["echo"]
+    db.update_job(conn, job_id, settings_json=db.dumps(opts))
+    return job_view(_job_or_404(conn, job_id))
 
 
 @router.post("/{job_id}/approve")
@@ -243,13 +310,20 @@ def preview(job_id: int, hit_id: int, variant: str = "censored", user: dict = De
         center_lo, center_hi = hit["cue_start"] or 0.0, hit["cue_end"] or 0.0
     start = max(0.0, center_lo - 1.5)
     length = min(12.0, (center_hi - center_lo) + 3.0)
-    edits = None
-    if variant == "censored":
-        hits = db.rows(conn, "SELECT * FROM job_hits WHERE job_id=?", (job_id,))
-        edits = [e for e in job_edits(job, hits) if e["end"] >= start and e["start"] <= start + length]
+    rcfg = render.RenderConfig.from_settings(settings, db.loads(job["settings_json"], {}).get("echo"))
     try:
-        clip, rate = render.preview_clip(jm["path"], jm["streamIndex"], jm["channels"], start, length, edits,
-                                         render.RenderConfig.from_settings(settings))
+        if variant == "censored" and job["status"] == "done" and job["output_path"] and os.path.exists(job["output_path"]):
+            # Exact: play the finished file, including Demucs echo cleanup.
+            out_info = media.probe(job["output_path"])
+            out_audio = media.choose_audio(out_info)
+            clip, rate = render.preview_clip(job["output_path"], out_audio["index"], out_audio["channels"], start,
+                                             length, None, rcfg)
+        else:
+            edits = None
+            if variant == "censored":
+                hits = db.rows(conn, "SELECT * FROM job_hits WHERE job_id=?", (job_id,))
+                edits = [e for e in job_edits(job, hits) if e["end"] + rcfg.echo_tail >= start and e["start"] <= start + length]
+            clip, rate = render.preview_clip(jm["path"], jm["streamIndex"], jm["channels"], start, length, edits, rcfg)
     except media.MediaError as e:
         raise HTTPException(500, str(e))
     return Response(content=render.wav_bytes(clip, rate), media_type="audio/wav", headers={"Cache-Control": "no-store"})

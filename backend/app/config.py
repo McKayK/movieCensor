@@ -89,16 +89,32 @@ class Settings:
     review_always: bool = field(default_factory=lambda: _bool("REVIEW_ALWAYS", False))
 
     # --- Boundaries (seconds) --------------------------------------------
-    pre_pad: float = field(default_factory=lambda: _float("PRE_PAD", 0.08))
-    post_pad: float = field(default_factory=lambda: _float("POST_PAD", 0.04))
-    min_pad: float = field(default_factory=lambda: _float("MIN_PAD", 0.03))
+    # Swears must never leak, so padding before a word wins over keeping the previous word intact.
+    pre_pad: float = field(default_factory=lambda: _float("PRE_PAD", 0.12))
+    post_pad: float = field(default_factory=lambda: _float("POST_PAD", 0.05))
+    min_pre_pad: float = field(default_factory=lambda: _float("MIN_PRE_PAD", 0.10))
+    min_post_pad: float = field(default_factory=lambda: _float("MIN_POST_PAD", 0.04))
     snap: float = field(default_factory=lambda: _float("SNAP", 0.05))
+    onset_detect: bool = field(default_factory=lambda: _bool("ONSET_DETECT", True))
+    onset_max: float = field(default_factory=lambda: _float("ONSET_MAX", 0.20))
     merge_gap: float = field(default_factory=lambda: _float("MERGE_GAP", 0.15))
-    fade: float = field(default_factory=lambda: _float("FADE", 0.008))
     line_pad: float = field(default_factory=lambda: _float("LINE_PAD", 0.15))
+    max_nudge: float = field(default_factory=lambda: _float("MAX_NUDGE", 0.5))
 
     # --- Render -----------------------------------------------------------
+    fade: float = field(default_factory=lambda: _float("FADE", 0.025))            # center / muted channels
+    duck_fade: float = field(default_factory=lambda: _float("DUCK_FADE", 0.06))   # speakers that are ducked or cleaned
+    # off = mute center (5.1) or everything (stereo); duck = also turn down other speakers through the echo tail;
+    # deep = Demucs removes the voice from every speaker through the echo tail, music keeps playing
+    echo_mode: str = field(default_factory=lambda: _str("ECHO_MODE", "deep"))
+    echo_tail: float = field(default_factory=lambda: _float("ECHO_TAIL", 0.35))
     front_duck: float = field(default_factory=lambda: _float("FRONT_DUCK", 0.25))
+    surround_duck: float = field(default_factory=lambda: _float("SURROUND_DUCK", 0.35))
+    center_tail_duck: float = field(default_factory=lambda: _float("CENTER_TAIL_DUCK", 0.2))
+    demucs_model: str = field(default_factory=lambda: _str("DEMUCS_MODEL", "htdemucs"))
+    deep_margin: float = field(default_factory=lambda: _float("DEEP_MARGIN", 0.3))
+    # stereo/mono deep clean: level of the voice-removed audio during the word itself (0 = silence, 1 = music at full)
+    deep_word_gain: float = field(default_factory=lambda: _float("DEEP_WORD_GAIN", 1.0))
     bleep_freq: float = field(default_factory=lambda: _float("BLEEP_FREQ", 1000.0))
     bleep_level: float = field(default_factory=lambda: _float("BLEEP_LEVEL", 0.2))
     bitrate_surround: str = field(default_factory=lambda: _str("AUDIO_BITRATE_SURROUND", "640k"))

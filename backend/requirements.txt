@@ -8,3 +8,4 @@ numpy==2.4.6
 pysubs2==1.8.1
 faster-whisper==1.2.1
 transformers>=4.45,<6
+demucs==4.1.0

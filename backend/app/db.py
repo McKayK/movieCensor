@@ -79,7 +79,10 @@ CREATE TABLE IF NOT EXISTS job_hits (
     mute_start  REAL,
     mute_end    REAL,
     confidence  REAL,
-    decision    TEXT NOT NULL    -- mute | mute_line | skip | pending
+    decision    TEXT NOT NULL,   -- mute | mute_line | skip | pending
+    nudge_start REAL NOT NULL DEFAULT 0,  -- seconds added before the span (review tweak)
+    nudge_end   REAL NOT NULL DEFAULT 0,  -- seconds added after the span
+    next_word   REAL                      -- start of the following spoken word (limits echo cleanup)
 );
 CREATE INDEX IF NOT EXISTS idx_hits_job ON job_hits(job_id);
 
@@ -119,8 +122,27 @@ def init_db(path: str | None = None) -> None:
     conn = connect(path)
     try:
         conn.executescript(SCHEMA)
+        _migrate(conn)
     finally:
         conn.close()
+
+
+MIGRATIONS = {
+    "job_hits": [
+        ("nudge_start", "REAL NOT NULL DEFAULT 0"),
+        ("nudge_end", "REAL NOT NULL DEFAULT 0"),
+        ("next_word", "REAL"),
+    ],
+}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a database was first created."""
+    for table, cols in MIGRATIONS.items():
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        for name, decl in cols:
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 @contextmanager

@@ -14,6 +14,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     HF_HOME=/data/models \
+    TORCH_HOME=/data/models/torch \
     STATIC_DIR=/app/static
 
 RUN apt-get update \

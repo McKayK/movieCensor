@@ -6,6 +6,10 @@ import { ErrorBox, ProgressBar, Spinner, StatusBadge } from '../components/ui'
 import { Line, RevealToggle, Word } from '../mask'
 
 const DECISION_LABELS = { mute: 'Mute word', mute_line: 'Mute line', skip: 'Leave in' }
+const ECHO_LABELS = { deep: 'Remove voice echo (Demucs)', duck: 'Turn other speakers down', off: 'Center only' }
+const STEP = 0.05
+
+const fmtNudge = (v) => (v ? `${v > 0 ? '+' : ''}${Math.round(v * 1000)}ms` : '')
 
 export default function Job() {
   const { id } = useParams()
@@ -47,6 +51,10 @@ export default function Job() {
 
   const decide = (hit, decision) =>
     act(() => api(`/api/jobs/${id}/hits/${hit.id}`, { method: 'POST', body: { decision } }))
+
+  const nudge = (hit, body) => act(() => api(`/api/jobs/${id}/hits/${hit.id}/nudge`, { method: 'POST', body }))
+
+  const updateSettings = (body) => act(() => api(`/api/jobs/${id}/settings`, { method: 'POST', body }))
 
   const bulk = (status, decision) => act(() => api(`/api/jobs/${id}/hits`, { method: 'POST', body: { status, decision } }))
 
@@ -107,6 +115,7 @@ export default function Job() {
           <span>Words: {job.settings.groupLabels.join(', ') || '—'}</span>
           {job.settings.custom_words?.length > 0 && <span>· Extra: {job.settings.custom_words.length}</span>}
           <span>· Style: {job.settings.style}</span>
+          <span>· Echo: {ECHO_LABELS[job.settings.echo] || ECHO_LABELS.deep}</span>
           {job.editCount > 0 && <span>· {job.editCount} edits</span>}
         </div>
         {job.canModify && (
@@ -119,6 +128,16 @@ export default function Job() {
             {ACTIVE_STATUSES.includes(job.status) && !job.cancelRequested && (
               <button className="btn-ghost" disabled={busy} onClick={() => act(() => api(`/api/jobs/${id}/cancel`, { method: 'POST' }))}>
                 Cancel
+              </button>
+            )}
+            {['done', 'failed'].includes(job.status) && job.hits?.length > 0 && (
+              <button
+                className="btn-ghost"
+                disabled={busy}
+                title="Keep the transcription, tweak decisions or timing, and render again"
+                onClick={() => act(() => api(`/api/jobs/${id}/rerender`, { method: 'POST' }))}
+              >
+                Reopen to tweak & re-render
               </button>
             )}
             {['failed', 'canceled'].includes(job.status) && (
@@ -138,6 +157,30 @@ export default function Job() {
               >
                 Delete job
               </button>
+            )}
+          </div>
+        )}
+        {reviewing && job.canModify && (
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+            <label className="flex items-center gap-2">
+              Style
+              <select className="input w-auto py-1 text-xs" value={job.settings.style} disabled={busy} onChange={(e) => updateSettings({ style: e.target.value })}>
+                <option value="mute">Mute</option>
+                <option value="bleep">Bleep</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-2">
+              Echo
+              <select className="input w-auto py-1 text-xs" value={job.settings.echo || 'deep'} disabled={busy} onChange={(e) => updateSettings({ echo: e.target.value })}>
+                {Object.entries(ECHO_LABELS).map(([v, label]) => (
+                  <option key={v} value={v}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {(job.settings.echo || 'deep') === 'deep' && (
+              <span>Previews approximate the echo cleanup by turning speakers down; the finished file uses Demucs.</span>
             )}
           </div>
         )}
@@ -189,6 +232,7 @@ export default function Job() {
                   <th className="px-4 py-2 font-medium">Status</th>
                   <th className="px-4 py-2 font-medium">Preview</th>
                   <th className="px-4 py-2 font-medium">Decision</th>
+                  <th className="px-4 py-2 font-medium">Timing</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
@@ -239,6 +283,42 @@ export default function Job() {
                         </div>
                       ) : (
                         <span className="text-xs text-slate-400">{DECISION_LABELS[h.decision] || 'Needs decision'}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 whitespace-nowrap">
+                      {reviewing && job.canModify && ['mute', 'mute_line'].includes(h.decision) ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            disabled={busy}
+                            onClick={() => nudge(h, { start: STEP })}
+                            className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                            title="Start the mute 50 ms earlier (use when you still hear the start of the word)"
+                          >
+                            ◀ earlier
+                          </button>
+                          <button
+                            disabled={busy}
+                            onClick={() => nudge(h, { end: STEP })}
+                            className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                            title="End the mute 50 ms later (use when you still hear the end of the word)"
+                          >
+                            later ▶
+                          </button>
+                          {(h.nudgeStart || h.nudgeEnd) ? (
+                            <>
+                              <span className="ml-1 font-mono text-[11px] text-amber-300">
+                                {fmtNudge(h.nudgeStart) || '0'} / {fmtNudge(h.nudgeEnd) || '0'}
+                              </span>
+                              <button disabled={busy} onClick={() => nudge(h, { reset: true })} className="ml-1 text-xs text-slate-500 hover:text-white">
+                                reset
+                              </button>
+                            </>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <span className="font-mono text-[11px] text-slate-500">
+                          {h.nudgeStart || h.nudgeEnd ? `${fmtNudge(h.nudgeStart) || '0'} / ${fmtNudge(h.nudgeEnd) || '0'}` : ''}
+                        </span>
                       )}
                     </td>
                   </tr>

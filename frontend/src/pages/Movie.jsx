@@ -15,6 +15,7 @@ export default function Movie() {
   const [selected, setSelected] = useState(new Set())
   const [custom, setCustom] = useState('')
   const [style, setStyle] = useState('mute')
+  const [echo, setEcho] = useState('deep')
   const [creating, setCreating] = useState(false)
   const [expanded, setExpanded] = useState(null)
 
@@ -70,7 +71,7 @@ export default function Movie() {
     try {
       const job = await api('/api/jobs', {
         method: 'POST',
-        body: { ratingKey: key, scanId: scan.id, groups: [...selected], customWords, style },
+        body: { ratingKey: key, scanId: scan.id, groups: [...selected], customWords, style, echo },
       })
       navigate(`/jobs/${job.id}`)
     } catch (e) {
@@ -277,6 +278,21 @@ export default function Movie() {
                       {label}
                     </label>
                   ))}
+                </div>
+                <div>
+                  <div className="mb-1 text-xs text-slate-400">Echo of the word in the other speakers</div>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                    {[
+                      ['deep', 'Remove the voice (best, a few extra minutes)'],
+                      ['duck', 'Turn other speakers down briefly'],
+                      ['off', 'Mute the dialogue channel only'],
+                    ].map(([v, label]) => (
+                      <label key={v} className="flex items-center gap-2">
+                        <input type="radio" name="echo" className="accent-amber-500" checked={echo === v} onChange={() => setEcho(v)} />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
                 </div>
               </div>
               <div className="flex flex-col items-end justify-end gap-2">

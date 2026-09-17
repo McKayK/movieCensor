@@ -19,13 +19,14 @@ def test_windows_merge_and_split():
 def test_padding_respects_neighbors_but_keeps_min():
     cfg = BoundaryConfig()
     # Plenty of room: full padding.
-    assert padded_span(5.0, 5.4, 4.0, 6.5, cfg) == (5.0 - 0.08, 5.4 + 0.04)
-    # Tight neighbors: clamp at midpoint...
+    lo, hi = padded_span(5.0, 5.4, 4.0, 6.5, cfg)
+    assert abs(lo - 4.88) < 1e-9 and abs(hi - 5.45) < 1e-9
+    # Tight neighbors: the minimum pads still apply (leaking the swear is worse than trimming "the")...
     lo, hi = padded_span(5.0, 5.4, 4.96, 5.44, cfg)
-    assert abs(lo - 4.97) < 1e-9 and abs(hi - 5.43) < 1e-9
-    # ...but never less than min_pad even if words touch.
+    assert abs(lo - 4.90) < 1e-9 and abs(hi - 5.44) < 1e-9
+    # ...even when the words touch.
     lo, hi = padded_span(5.0, 5.4, 5.0, 5.4, cfg)
-    assert abs(lo - 4.97) < 1e-9 and abs(hi - 5.43) < 1e-9
+    assert abs(lo - 4.90) < 1e-9 and abs(hi - 5.44) < 1e-9
 
 
 def test_snap_moves_to_silence_only_outward():
@@ -40,7 +41,7 @@ def test_snap_moves_to_silence_only_outward():
     assert 0.925 <= q <= 0.955
     words = [{"start": 0.5, "end": 0.8}, {"start": 1.0, "end": 1.3}, {"start": 1.6, "end": 1.9}]
     lo, hi = refine(words, 1, 1, read, BoundaryConfig())
-    assert lo <= 0.95 and lo >= 0.87  # widened into the gap, not into the previous word
+    assert 0.8 <= lo <= 0.9  # at least the minimum pre-pad, never back into the previous word
     assert hi >= 1.34
 
 
@@ -83,6 +84,7 @@ def test_reconcile_statuses_and_edits():
     assert hits[1]["decision"] == "pending"
     hits[1]["decision"] = "mute_line"
     edits = build_edits(hits, "mute", merge_gap=0.15, line_pad=0.15)
+    assert all(e["tail"] == 0.35 for e in edits)
     assert [(e["start"], e["end"]) for e in edits] == [(10.42, 10.84), (19.85, 22.15), (29.92, 30.34)]
 
 
@@ -90,7 +92,7 @@ def test_envelope_is_silent_inside_span_and_fades_outside():
     rate = 1000
     x = np.ones((3000, 6), dtype=np.float32)
     edits = [{"start": 1.0, "end": 2.0, "kind": "mute"}]
-    cfg = RenderConfig(fade=0.05, front_duck=0.25)
+    cfg = RenderConfig(fade=0.05, duck_fade=0.05, front_duck=0.25, echo_mode="off")
     # Process in two chunks to prove chunk boundaries don't matter.
     a, b = x[:1500].copy(), x[1500:].copy()
     apply_edits(a, 0, rate, edits, "5.1", cfg)
@@ -98,9 +100,11 @@ def test_envelope_is_silent_inside_span_and_fades_outside():
     y = np.vstack([a, b])
     assert np.all(y[1000:2001, 2] == 0)                 # center silent for the whole span
     assert np.allclose(y[1000:2001, 0], 0.25)            # fronts ducked
-    assert np.all(y[:, 3] == 1) and np.all(y[:, 4] == 1)  # LFE + surrounds untouched
+    assert np.all(y[:, 3] == 1) and np.all(y[:, 4] == 1)  # LFE + surrounds untouched in "off" mode
     assert y[949, 2] == 1 and 0 < y[975, 2] < 1          # fade sits before the span
     assert y[2051, 2] == 1
+    # Raised-cosine fade: smooth start (no slope jump) and halfway at the midpoint.
+    assert abs(y[975, 2] - 0.5) < 0.05 and y[951, 2] > 0.99
 
 
 def test_paths_and_names():

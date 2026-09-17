@@ -71,3 +71,35 @@ def test_browse_scan_and_create_job(client):
     assert dup.status_code == 409
     assert client.post(f"/api/jobs/{job['id']}/cancel").json()["status"] == "canceled"
     assert client.get("/api/wordgroups").json()["presets"][0]["id"] == "essential"
+
+
+def test_review_tweaks_nudge_settings_and_rerender(client):
+    from app import db
+    from app.config import settings
+
+    scan = client.post("/api/movies/42/scan", json={}).json()
+    for _ in range(50):
+        if scan["status"] != "running":
+            break
+        time.sleep(0.1)
+        scan = client.get(f"/api/scans/{scan['id']}").json()
+    job = client.post("/api/jobs", json={"ratingKey": "42", "scanId": scan["id"], "groups": ["f_word"], "echo": "duck"}).json()
+    assert job["settings"]["echo"] == "duck"
+    with db.session() as conn:
+        conn.execute("INSERT INTO job_hits (job_id, source, group_id, word, cue_start, cue_end, status, word_start, word_end, "
+                     "mute_start, mute_end, decision) VALUES (?, 'both', 'f_word', 'fuck', 6.9, 8.6, 'confirmed', 7.55, 7.95, 7.43, 8.0, 'mute')",
+                     (job["id"],))
+        db.update_job(conn, job["id"], status="needs_review", media_json='{"path": "x"}')
+    hit = client.get(f"/api/jobs/{job['id']}").json()["hits"][0]
+    r = client.post(f"/api/jobs/{job['id']}/hits/{hit['id']}/nudge", json={"start": 0.05}).json()
+    r = client.post(f"/api/jobs/{job['id']}/hits/{hit['id']}/nudge", json={"start": 0.05, "end": 0.05}).json()
+    assert (r["nudgeStart"], r["nudgeEnd"]) == (0.1, 0.05)
+    big = client.post(f"/api/jobs/{job['id']}/hits/{hit['id']}/nudge", json={"start": 5}).json()
+    assert big["nudgeStart"] == settings.max_nudge
+    assert client.post(f"/api/jobs/{job['id']}/settings", json={"echo": "deep", "style": "bleep"}).json()["settings"]["echo"] == "deep"
+    assert client.post(f"/api/jobs/{job['id']}/settings", json={"echo": "nope"}).status_code == 400
+    with db.session() as conn:
+        db.update_job(conn, job["id"], status="done")
+    reopened = client.post(f"/api/jobs/{job['id']}/rerender").json()
+    assert reopened["status"] == "needs_review"
+    assert client.get(f"/api/jobs/{job['id']}").json()["hits"][0]["nudgeStart"] == settings.max_nudge

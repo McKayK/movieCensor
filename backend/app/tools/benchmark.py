@@ -23,6 +23,7 @@ def main() -> None:
     ap.add_argument("--model", default=settings.whisper_model)
     ap.add_argument("--threads", type=int, default=settings.cpu_threads)
     ap.add_argument("--no-align", action="store_true")
+    ap.add_argument("--demucs", action="store_true", help="also time Demucs voice removal on 10 s of the movie")
     args = ap.parse_args()
 
     info = media.probe(args.movie)
@@ -49,7 +50,8 @@ def main() -> None:
         segs = tr.transcribe(clip, GENERIC_PROMPT)
         took = time.time() - t0
         tr.close()
-        print(f"whisper {args.model}: load {load:.1f}s, transcribe {took:.1f}s -> {reader.duration / took:.2f}x realtime")
+        rtf = reader.duration / took
+        print(f"whisper {args.model}: load {load:.1f}s, transcribe {took:.1f}s -> {rtf:.2f}x realtime")
         for s in segs:
             print(f"  [{s['start']:6.2f}-{s['end']:6.2f}] {s['text']}")
 
@@ -69,8 +71,31 @@ def main() -> None:
                 print(f"  {w['word']:<14} whisper {ws:6.2f}-{we:6.2f}  aligned {w['start']:6.2f}-{w['end']:6.2f}"
                       f"  shift {w['start'] - ws:+.3f}s")
 
+        if args.demucs:
+            import numpy as np
+
+            from ..pipeline.render import decode_args, separate_block
+            from ..pipeline.separate import DemucsRemover
+            import subprocess
+
+            layout = media.output_layout(audio["channels"])
+            ch = media.LAYOUT_CHANNELS[layout]
+            raw = subprocess.run(decode_args(args.movie, audio["index"], layout, 48000, start=args.start, length=10.0),
+                                 capture_output=True, check=True).stdout
+            block = np.frombuffer(raw[: len(raw) - len(raw) % (4 * ch)], dtype="<f4").reshape(-1, ch).copy()
+            t0 = time.time()
+            remover = DemucsRemover(settings.demucs_model, args.threads, settings.models_dir)
+            load = time.time() - t0
+            t0 = time.time()
+            separate_block(block, layout, remover, 48000)
+            took = time.time() - t0
+            remover.close()
+            per_hit = took / 10.0 * 1.5  # a typical cleaned region is ~1.5 s
+            print(f"demucs {settings.demucs_model}: load {load:.1f}s, 10 s of {layout} took {took:.1f}s "
+                  f"-> about {per_hit:.1f}s per censored word, ~{per_hit * 40 / 60:.0f} min for 40 words")
+
         est = 12 * 60  # ~12 minutes of windows for a typical R-rated movie
-        print(f"\nEstimated analysis time for ~{est // 60} min of windows: ~{est / (reader.duration / took) / 60:.0f} min "
+        print(f"\nEstimated analysis time for ~{est // 60} min of windows: ~{est / rtf / 60:.0f} min "
               "(transcription only; alignment adds a little)")
 
 
