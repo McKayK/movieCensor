@@ -9,7 +9,6 @@ const DECISION_LABELS = { mute: 'Mute word', mute_line: 'Mute line', skip: 'Leav
 const ECHO_LABELS = { deep: 'Remove voice echo (Demucs)', duck: 'Turn other speakers down', off: 'Center only' }
 const STEP = 0.05
 
-const fmtNudge = (v) => (v ? `${v > 0 ? '+' : ''}${Math.round(v * 1000)}ms` : '')
 
 export default function Job() {
   const { id } = useParams()
@@ -286,40 +285,12 @@ export default function Job() {
                       )}
                     </td>
                     <td className="px-4 py-2 whitespace-nowrap">
-                      {reviewing && job.canModify && ['mute', 'mute_line'].includes(h.decision) ? (
-                        <div className="flex items-center gap-1">
-                          <button
-                            disabled={busy}
-                            onClick={() => nudge(h, { start: STEP })}
-                            className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
-                            title="Start the mute 50 ms earlier (use when you still hear the start of the word)"
-                          >
-                            ◀ earlier
-                          </button>
-                          <button
-                            disabled={busy}
-                            onClick={() => nudge(h, { end: STEP })}
-                            className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
-                            title="End the mute 50 ms later (use when you still hear the end of the word)"
-                          >
-                            later ▶
-                          </button>
-                          {(h.nudgeStart || h.nudgeEnd) ? (
-                            <>
-                              <span className="ml-1 font-mono text-[11px] text-amber-300">
-                                {fmtNudge(h.nudgeStart) || '0'} / {fmtNudge(h.nudgeEnd) || '0'}
-                              </span>
-                              <button disabled={busy} onClick={() => nudge(h, { reset: true })} className="ml-1 text-xs text-slate-500 hover:text-white">
-                                reset
-                              </button>
-                            </>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <span className="font-mono text-[11px] text-slate-500">
-                          {h.nudgeStart || h.nudgeEnd ? `${fmtNudge(h.nudgeStart) || '0'} / ${fmtNudge(h.nudgeEnd) || '0'}` : ''}
-                        </span>
-                      )}
+                      <TimingCell
+                        hit={h}
+                        editable={reviewing && job.canModify && ['mute', 'mute_line'].includes(h.decision)}
+                        busy={busy}
+                        onNudge={(body) => nudge(h, body)}
+                      />
                     </td>
                   </tr>
                 ))}
@@ -330,6 +301,41 @@ export default function Job() {
       )}
       {job.status === 'done' && job.hits?.length === 0 && (
         <p className="text-sm text-slate-400">Nothing was flagged. The copy only drops image subtitles and extra audio tracks.</p>
+      )}
+    </div>
+  )
+}
+
+function TimingCell({ hit, editable, busy, onNudge }) {
+  const ns = hit.nudgeStart || 0
+  const ne = hit.nudgeEnd || 0
+  // How far the mute begins before / ends after the detected word (after nudges).
+  const lead = hit.muteStart != null && hit.wordStart != null ? hit.wordStart - (hit.muteStart - ns) : null
+  const tail = hit.muteEnd != null && hit.wordEnd != null ? hit.muteEnd + ne - hit.wordEnd : null
+  const ms = (v) => `${Math.round(v * 1000)}ms`
+  const btn = 'rounded bg-slate-800 px-1.5 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 disabled:opacity-50'
+  return (
+    <div className="space-y-1">
+      {lead != null && (
+        <div className="font-mono text-[11px] text-slate-500" title="Silence before the word starts / after it ends">
+          −{ms(lead)} · +{ms(tail)}
+          {(ns || ne) ? <span className="ml-1 text-amber-300">(nudged)</span> : null}
+        </div>
+      )}
+      {editable && (
+        <div className="flex items-center gap-1">
+          <span className="text-[11px] text-slate-500">start</span>
+          <button className={btn} disabled={busy} onClick={() => onNudge({ start: STEP })} title="Start 50 ms earlier (you still hear the beginning of the word)">◀</button>
+          <button className={btn} disabled={busy} onClick={() => onNudge({ start: -STEP })} title="Start 50 ms later (it cuts into the word before)">▶</button>
+          <span className="ml-1 text-[11px] text-slate-500">end</span>
+          <button className={btn} disabled={busy} onClick={() => onNudge({ end: -STEP })} title="End 50 ms earlier (it cuts into the next word)">◀</button>
+          <button className={btn} disabled={busy} onClick={() => onNudge({ end: STEP })} title="End 50 ms later (you still hear the end of the word)">▶</button>
+          {(ns || ne) ? (
+            <button className="ml-1 text-[11px] text-slate-500 hover:text-white" disabled={busy} onClick={() => onNudge({ reset: true })}>
+              reset
+            </button>
+          ) : null}
+        </div>
       )}
     </div>
   )

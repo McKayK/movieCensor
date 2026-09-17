@@ -143,18 +143,19 @@ All values are in `.env` and in seconds. After changing them, run `docker compos
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `PRE_PAD` | 0.12 | Silence before the aligned word start. |
-| `MIN_PRE_PAD` | 0.10 | Always applied before a word, even if it trims the end of the previous word. |
+| `PRE_PAD` | 0.08 | Silence before the aligned word start. |
+| `MIN_PRE_PAD` | 0.06 | Always applied before a word, even if it trims the end of the previous word. |
+| `MAX_LEAD` | 0.18 | Hard limit on how early a mute can start before the word. |
 | `POST_PAD` / `MIN_POST_PAD` | 0.05 / 0.04 | Same, after the word. |
-| `ONSET_DETECT` / `ONSET_MAX` | true / 0.20 | Finds where hissy consonants (f, s, sh) really start, up to 200 ms before the aligned word. |
-| `SNAP` | 0.05 | How far an edge may move outward to a quiet spot. |
+| `ONSET_DETECT` / `ONSET_MAX` | true / 0.15 | For words starting with f, s, sh, ch, th or z: finds where the hiss really starts, up to 150 ms before the aligned word. Only accepted if that stretch is actually hiss. |
+| `SNAP` | 0.03 | How far an edge may move outward to a quiet spot. |
 | `FADE` | 0.025 | S-curve fade on the muted dialogue. Raise to 0.04 if you still hear clicks. |
 | `DUCK_FADE` | 0.06 | Fade on speakers that are turned down or cleaned. |
 | `ECHO_MODE` | deep | Default for new jobs: `deep` (Demucs removes the voice from every speaker), `duck`, or `off`. |
 | `ECHO_TAIL` | 0.35 | How long echo cleanup continues after the word. Stops early if someone speaks again. |
 | `FRONT_DUCK` / `SURROUND_DUCK` | 0.25 / 0.35 | Speaker levels in duck mode, or when Demucs isn't available. |
 
-**Per-hit fixes in review:** each muted hit has **◀ earlier** and **later ▶** buttons that widen that one mute by 50 ms.
+**Per-hit fixes in review:** the Timing column shows how much silence sits before and after each word (e.g. `−90ms · +50ms`). The **start ◀ ▶** and **end ◀ ▶** buttons move that edge by 50 ms.
 
 **Deep clean:** Demucs only processes about 1.5 seconds around each censored word, for each speaker pair. To see how long that takes on your CPU:
 

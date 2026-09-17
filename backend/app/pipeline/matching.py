@@ -8,7 +8,7 @@ import numpy as np
 from .boundaries import BoundaryConfig, merge_spans, refine
 from .profanity import find_matches
 
-UNALIGNED_EXTRA = 0.12
+UNALIGNED_EXTRA = 0.12  # after the word only: Whisper tends to start words early and end them early
 
 
 def audio_matches(words: list[dict], groups: list[str], custom_words: list[str] = ()) -> list[dict]:
@@ -63,7 +63,7 @@ def analyze_windows(
             lo, hi = refine(words, am["first"], am["last"], read, cfg)
             if not am["aligned"]:
                 # Whisper-only timing drifts; be generous rather than leak half a word.
-                lo, hi = max(0.0, lo - UNALIGNED_EXTRA), hi + UNALIGNED_EXTRA
+                hi = hi + UNALIGNED_EXTRA
             am["mute_start"], am["mute_end"] = lo, hi
             am["next_start"] = words[am["last"] + 1]["start"] if am["last"] + 1 < len(words) else None
             dup = next(

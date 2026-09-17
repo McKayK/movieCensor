@@ -12,21 +12,41 @@ import numpy as np
 RATE = 16000
 
 
+HISSY_STARTS = ("f", "s", "sh", "ch", "th", "z", "ph", "j")
+
+
 @dataclass
 class BoundaryConfig:
-    pre_pad: float = 0.12
+    pre_pad: float = 0.08
     post_pad: float = 0.05
-    min_pre_pad: float = 0.10
+    min_pre_pad: float = 0.06
     min_post_pad: float = 0.04
-    snap: float = 0.05
+    snap: float = 0.03
     onset_detect: bool = True
-    onset_max: float = 0.20
+    onset_max: float = 0.15
     merge_gap: float = 0.15
+    max_lead: float = 0.18
 
     @classmethod
     def from_settings(cls, s) -> "BoundaryConfig":
         return cls(s.pre_pad, s.post_pad, s.min_pre_pad, s.min_post_pad, s.snap, s.onset_detect, s.onset_max,
-                   s.merge_gap)
+                   s.merge_gap, s.max_lead)
+
+
+def starts_hissy(word: str) -> bool:
+    """Words whose first sound is a quiet fricative the aligner tends to mark late (f, s, sh, ch, th, z)."""
+    w = "".join(c for c in word.lower() if c.isalpha())
+    return w.startswith(HISSY_STARTS)
+
+
+def hiss_ratio(x: np.ndarray, rate: int = RATE, split_hz: float = 2500.0) -> float:
+    """Share of energy above `split_hz`. Fricatives are mostly high-frequency; vowels are not."""
+    if len(x) < 64:
+        return 0.0
+    spec = np.abs(np.fft.rfft(x * np.hanning(len(x)))) ** 2
+    freqs = np.fft.rfftfreq(len(x), 1 / rate)
+    total = float(spec[freqs > 80].sum())
+    return float(spec[freqs >= split_hz].sum()) / total if total > 1e-12 else 0.0
 
 
 def padded_span(
@@ -112,15 +132,17 @@ def detect_onset(
     cfg: BoundaryConfig,
     rate: int = RATE,
 ) -> float | None:
-    """Where the word really begins, if acoustics say earlier than the aligner.
+    """Where a hissy consonant really begins, if clearly earlier than the aligner says.
 
-    Aligners mark a consonant where it is most recognizable, which for "f"/"sh" is often 50-150 ms after the
-    sound starts. We look for the nearest strong onset shortly before (or at) the aligned start.
+    Only accepted when the audio between the candidate onset and the aligned start is hiss-dominated.
+    That stops it from latching onto the previous word's syllables in fast speech.
     """
     look_a = start - cfg.onset_max
     if prev_start is not None:
-        look_a = max(look_a, prev_start + 0.02)  # never walk into the previous word's own onset
+        look_a = max(look_a, prev_start + 0.05)  # never walk into the previous word's own onset
     look_a = max(0.0, look_a)
+    if look_a >= start - 0.02:
+        return None
     ctx_a = max(0.0, start - 0.8)
     ctx_b = start + 0.3
     x = read(ctx_a, ctx_b)
@@ -128,29 +150,28 @@ def detect_onset(
     if len(flux) < 5:
         return None
     t = times + ctx_a
-    in_range = (t >= look_a) & (t <= start + 0.02)
+    in_range = (t >= look_a) & (t <= start)
     if not in_range.any():
         return None
     candidates = np.where(in_range)[0]
     local_max = flux[candidates].max()
     floor = float(np.median(flux))
-    threshold = max(2.0 * floor, 0.35 * local_max)
     if local_max <= 2.0 * floor or local_max <= 1e-6:
-        return None  # nothing that stands out: trust the padding
-    # Peaks: frames above threshold that are local maxima.
+        return None  # nothing stands out: trust the padding
+    threshold = max(2.0 * floor, 0.35 * local_max)
     peaks = [k for k in candidates
              if flux[k] >= threshold
              and flux[k] >= flux[max(0, k - 1)]
              and flux[k] >= flux[min(len(flux) - 1, k + 1)]]
-    if not peaks:
-        return None
-    k = peaks[-1]  # nearest strong onset at or before the aligned start
-    # Rewind to where the rise began so the very first bit of the consonant is inside the span.
-    while k > 0 and t[k - 1] >= look_a and flux[k - 1] > floor * 1.2 and flux[k - 1] < flux[k]:
-        k -= 1
-    onset = float(t[k]) - 0.010
-    return onset if onset < start else None
-
+    for k in reversed(peaks):  # nearest first
+        onset = float(t[k]) - 0.010
+        if onset >= start - 0.02:
+            continue  # not meaningfully earlier than the aligner
+        seg = read(max(0.0, onset), start)
+        if hiss_ratio(seg, rate) >= 0.45:
+            return onset
+        return None  # nearest real onset isn't a hiss: it belongs to something else
+    return None
 
 def snap_span(
     lo: float,
@@ -191,11 +212,12 @@ def refine(
     prev_start = words[first - 1]["start"] if first > 0 else None
     next_start = words[last + 1]["start"] if last + 1 < len(words) else None
     lo, hi = padded_span(start, end, prev_end, next_start, cfg)
-    if read is not None and cfg.onset_detect:
+    if read is not None and cfg.onset_detect and starts_hissy(words[first].get("word", "")):
         onset = detect_onset(read, start, prev_start, cfg)
         if onset is not None:
-            lo = min(lo, onset - 0.02)
+            lo = min(lo, onset - 0.01)
     lo, hi = snap_span(lo, hi, prev_end, next_start, read, cfg)
+    lo = max(lo, start - cfg.max_lead)  # hard cap: never eat far into what came before
     return max(0.0, lo), hi
 
 

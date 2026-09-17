@@ -90,13 +90,15 @@ class Settings:
 
     # --- Boundaries (seconds) --------------------------------------------
     # Swears must never leak, so padding before a word wins over keeping the previous word intact.
-    pre_pad: float = field(default_factory=lambda: _float("PRE_PAD", 0.12))
+    pre_pad: float = field(default_factory=lambda: _float("PRE_PAD", 0.08))
     post_pad: float = field(default_factory=lambda: _float("POST_PAD", 0.05))
-    min_pre_pad: float = field(default_factory=lambda: _float("MIN_PRE_PAD", 0.10))
+    min_pre_pad: float = field(default_factory=lambda: _float("MIN_PRE_PAD", 0.06))
     min_post_pad: float = field(default_factory=lambda: _float("MIN_POST_PAD", 0.04))
-    snap: float = field(default_factory=lambda: _float("SNAP", 0.05))
+    snap: float = field(default_factory=lambda: _float("SNAP", 0.03))
     onset_detect: bool = field(default_factory=lambda: _bool("ONSET_DETECT", True))
-    onset_max: float = field(default_factory=lambda: _float("ONSET_MAX", 0.20))
+    onset_max: float = field(default_factory=lambda: _float("ONSET_MAX", 0.15))
+    # Hard limit on how far before the aligned word a mute may start (nudges can still go further)
+    max_lead: float = field(default_factory=lambda: _float("MAX_LEAD", 0.18))
     merge_gap: float = field(default_factory=lambda: _float("MERGE_GAP", 0.15))
     line_pad: float = field(default_factory=lambda: _float("LINE_PAD", 0.15))
     max_nudge: float = field(default_factory=lambda: _float("MAX_NUDGE", 0.5))

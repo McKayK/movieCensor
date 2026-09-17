@@ -17,7 +17,7 @@ def test_windows_merge_and_split():
 
 
 def test_padding_respects_neighbors_but_keeps_min():
-    cfg = BoundaryConfig()
+    cfg = BoundaryConfig(pre_pad=0.12, post_pad=0.05, min_pre_pad=0.10, min_post_pad=0.04)
     # Plenty of room: full padding.
     lo, hi = padded_span(5.0, 5.4, 4.0, 6.5, cfg)
     assert abs(lo - 4.88) < 1e-9 and abs(hi - 5.45) < 1e-9
@@ -41,7 +41,7 @@ def test_snap_moves_to_silence_only_outward():
     assert 0.925 <= q <= 0.955
     words = [{"start": 0.5, "end": 0.8}, {"start": 1.0, "end": 1.3}, {"start": 1.6, "end": 1.9}]
     lo, hi = refine(words, 1, 1, read, BoundaryConfig())
-    assert 0.8 <= lo <= 0.9  # at least the minimum pre-pad, never back into the previous word
+    assert 1.0 - 0.18 <= lo <= 1.0 - 0.06  # at least the minimum pre-pad, never more than MAX_LEAD
     assert hi >= 1.34
 
 
@@ -122,3 +122,48 @@ def test_alignment_sanity_check():
     assert plausible(10.02, 10.4, 10.1, 10.5)
     assert not plausible(9.0, 12.0, 10.1, 10.5)   # smeared over 3 s
     assert not plausible(12.0, 12.3, 10.1, 10.4)  # far from Whisper's guess
+
+
+def _scene(rate=16000):
+    rng = np.random.default_rng(0)
+    t = np.arange(2 * rate) / rate
+    x = 0.002 * rng.standard_normal(len(t))
+
+    def seg(a, b):
+        return (t >= a) & (t < b)
+
+    x[seg(0.6, 0.99)] += 0.3 * np.sin(2 * np.pi * 180 * t[seg(0.6, 0.99)])          # "the" (vowel, runs into the swear)
+    hiss = np.diff(rng.standard_normal(len(t)), prepend=0)
+    x[seg(1.0, 1.12)] += 0.05 * hiss[seg(1.0, 1.12)]                                # the "f" hiss
+    m = seg(1.12, 1.4)
+    x[m] += 0.3 * np.sin(2 * np.pi * 150 * t[m]) + 0.1 * np.sin(2 * np.pi * 900 * t[m])  # "uck"
+    x = x.astype(np.float32)
+    return lambda a, b: x[int(a * rate):int(b * rate)]
+
+
+def test_onset_detection_only_for_hissy_words_and_capped():
+    from app.pipeline.boundaries import detect_onset, starts_hissy
+
+    read = _scene()
+    cfg = BoundaryConfig()
+    onset = detect_onset(read, 1.12, 0.6, cfg)
+    assert onset is not None and 0.97 <= onset <= 1.01               # found the real start of the hiss
+    assert starts_hissy("Fucking") and starts_hissy("shit") and not starts_hissy("bitch") and not starts_hissy("damn")
+    hissy = [{"word": "the", "start": 0.6, "end": 0.99}, {"word": "fuck", "start": 1.12, "end": 1.4}]
+    lo, _ = refine(hissy, 1, 1, read, cfg)
+    assert 1.12 - cfg.max_lead - 1e-9 <= lo <= 1.0                    # covers the hiss, capped lead
+    plosive = [{"word": "the", "start": 0.6, "end": 0.99}, {"word": "damn", "start": 1.12, "end": 1.4}]
+    lo2, _ = refine(plosive, 1, 1, read, cfg)
+    assert lo2 >= 1.12 - cfg.pre_pad - cfg.snap - 1e-9                 # no onset search for non-hissy words
+
+
+def test_onset_ignores_previous_word_syllables():
+    from app.pipeline.boundaries import detect_onset
+
+    rate = 16000
+    t = np.arange(2 * rate) / rate
+    x = np.zeros(len(t), dtype=np.float32)
+    x[(t >= 0.9) & (t < 1.05)] = 0.3 * np.sin(2 * np.pi * 220 * t[(t >= 0.9) & (t < 1.05)])   # vowel right before
+    x[(t >= 1.05) & (t < 1.3)] = 0.3 * np.sin(2 * np.pi * 330 * t[(t >= 1.05) & (t < 1.3)])
+    read = lambda a, b: x[int(a * rate):int(b * rate)]
+    assert detect_onset(read, 1.1, 0.7, BoundaryConfig()) is None     # tonal onsets are not a hiss
