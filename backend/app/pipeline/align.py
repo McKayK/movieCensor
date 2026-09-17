@@ -155,8 +155,13 @@ class Aligner:
         torch.set_num_threads(max(1, threads))
         log.info("loading alignment model %s", model_name)
         self._torch = torch
-        self.processor = Wav2Vec2Processor.from_pretrained(model_name, cache_dir=cache_dir)
-        self.model = Wav2Vec2ForCTC.from_pretrained(model_name, cache_dir=cache_dir)
+        try:
+            self.processor = Wav2Vec2Processor.from_pretrained(model_name, cache_dir=cache_dir, local_files_only=True)
+            self.model = Wav2Vec2ForCTC.from_pretrained(model_name, cache_dir=cache_dir, local_files_only=True)
+        except Exception:
+            log.info("alignment model %s not cached yet, downloading", model_name)
+            self.processor = Wav2Vec2Processor.from_pretrained(model_name, cache_dir=cache_dir)
+            self.model = Wav2Vec2ForCTC.from_pretrained(model_name, cache_dir=cache_dir)
         self.model.eval()
         vocab = self.processor.tokenizer.get_vocab()
         self.vocab = {k: v for k, v in vocab.items() if len(k) == 1}

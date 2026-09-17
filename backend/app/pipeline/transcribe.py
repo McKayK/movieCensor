@@ -20,8 +20,13 @@ class Transcriber:
         from faster_whisper import WhisperModel  # heavy import, keep lazy
 
         log.info("loading whisper model %s (%s/%s, %d threads)", model, device, compute_type, threads)
-        self.model = WhisperModel(model, device=device, compute_type=compute_type, cpu_threads=threads,
-                                  download_root=download_root)
+        kwargs = dict(device=device, compute_type=compute_type, cpu_threads=threads, download_root=download_root)
+        try:
+            # Use the cached copy without asking the Hugging Face Hub first (slow/rate-limited when unauthenticated).
+            self.model = WhisperModel(model, local_files_only=True, **kwargs)
+        except Exception:
+            log.info("whisper model %s not cached yet, downloading", model)
+            self.model = WhisperModel(model, **kwargs)
         self.beam_size = beam_size
 
     def transcribe(self, audio: np.ndarray, prompt: str | None = None) -> list[dict]:
